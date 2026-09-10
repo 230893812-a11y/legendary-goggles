@@ -29,7 +29,7 @@ async def custom_site():
     platform.window.canvas.style.visibility = "visible"
 
 
-    bundle = "web_build"
+    bundle = "web_build_v8d91643"
 
     # the C or js loader could do that but be explicit.
     appdir = Path(f"/data/data/{bundle}") # /data/data/web_build
@@ -276,12 +276,13 @@ function show_infobox() {
     </style>
 
     <script>
-/*
-        if (navigator.serviceWorker)
-            navigator.serviceWorker.register("https://pygame-web.github.io/cdn/0.9.3/pygbag0.9.3.js")
-        else
-            console.warn("Service workers not supported")
-*/
+        // GitHub Pages does not need the old Pygbag service worker. Remove any
+        // stale registration so a previous game archive cannot mask this build.
+        if (navigator.serviceWorker) {
+            navigator.serviceWorker.getRegistrations().then(function (items) {
+                items.forEach(function (item) { item.unregister(); });
+            });
+        }
     </script>
 
     <!-- Load BrowserFS locally to avoid cross-origin MIME blocking on GitHub Pages. -->
