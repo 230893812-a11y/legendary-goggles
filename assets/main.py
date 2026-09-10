@@ -207,12 +207,18 @@ class Bullet:
                          (int(self.x - self.w//2), int(self.y - self.h//2), self.w, self.h))
 
 # ====================== 坦克 ======================
+AGENT_NAMES = {'chaser': 'CHASE', 'sniper': 'SNIPE', 'flanker': 'FLANK', 'defender': 'GUARD', 'boss': 'BOSS'}
+AGENT_COLORS = {'chaser': (235, 82, 72), 'sniper': (70, 175, 235), 'flanker': (245, 155, 60), 'defender': (80, 190, 120), 'boss': (170, 95, 220)}
+
 class Tank:
-    def __init__(self, x, y, dir, type='player'):
+    def __init__(self, x, y, dir, type='player', agent_type=None):
         self.x = x
         self.y = y
         self.dir = dir
         self.type = type
+        self.agent_type = agent_type
+        self.ai_state = 'SPAWN' if agent_type else ''
+        self.strafe = random.choice((-1, 1))
         self.size = 28
         if type == 'player':
             self.speed = 2
@@ -310,6 +316,15 @@ class Tank:
         bx = cx + DIR_DX[self.dir] * 4
         by = cy + DIR_DY[self.dir] * 4
         pygame.draw.rect(surf, (40, 40, 40), (bx - 2, by - 2, 4, 4))
+        if self.agent_type and self.spawn_timer <= 0:
+            label = AGENT_NAMES[self.agent_type]
+            if self.agent_type == 'boss': label = 'BOSS'
+            try:
+                f = pygame.font.Font(None, 14)
+                tag = f.render(label, True, AGENT_COLORS[self.agent_type])
+                surf.blit(tag, (int(self.x + s / 2 - tag.get_width() / 2), int(self.y - 13)))
+            except Exception:
+                pass
         if self.move_flash > 0:
             pygame.draw.rect(surf, (255, 255, 255, 60),
                              (self.x, self.y, s, s), 1)
@@ -359,24 +374,22 @@ class Game:
         self.score = 0
         self.level = 1
         self.lives = 3
-        self.max_enemies = 4
+        self.max_enemies = 8
         self.enemies_left = self.max_enemies
         self.enemy_queue = []
         self.spawn_timer = 0
+        self.player = Tank(12 * TILE + MARGIN, 13 * TILE + MARGIN, DIR_UP, 'player')
+        agent_cycle = ['chaser', 'sniper', 'flanker', 'defender', 'boss']
         for i in range(self.max_enemies):
             r = random.random()
             t = 'basic' if r < 0.5 else ('fast' if r < 0.8 else 'heavy')
-            self.enemy_queue.append(t)
+            self.enemy_queue.append((t, agent_cycle[i % len(agent_cycle)]))
         self.spawn_enemy()
-        self.player = Tank(
-            self.base_pos[0] - self.base_pos[0] + 12 * TILE + MARGIN,
-            self.base_pos[1] - self.base_pos[1] + 13 * TILE + MARGIN,
-            DIR_UP, 'player')
 
     def spawn_enemy(self):
         if not self.enemy_queue:
             return
-        etype = self.enemy_queue.pop(0)
+        etype, agent_type = self.enemy_queue.pop(0)
         spawn_cols = [1, 9, 18]
         for c in spawn_cols:
             tx = c * TILE + MARGIN
@@ -388,7 +401,7 @@ class Game:
                     blocked = True
                     break
             if not blocked:
-                e = Tank(tx, ty, DIR_DOWN, etype)
+                e = Tank(tx, ty, DIR_DOWN, etype, agent_type)
                 e.spawn_timer = 40
                 self.enemies.append(e)
                 return
@@ -436,20 +449,32 @@ class Game:
                 continue
             e.move_timer -= 1
             if e.move_timer <= 0:
-                e.move_timer = 40 + random.randint(0, 80)
-                if random.random() < 0.5:
-                    dx = self.player.cx - e.cx
-                    dy = self.player.cy - e.cy
-                    if abs(dx) > abs(dy):
-                        e.dir = DIR_RIGHT if dx > 0 else DIR_LEFT
-                    else:
-                        e.dir = DIR_DOWN if dy > 0 else DIR_UP
+                e.move_timer = 28 + random.randint(0, 45)
+                dx, dy = self.player.cx - e.cx, self.player.cy - e.cy
+                horiz = DIR_RIGHT if dx > 0 else DIR_LEFT
+                vert = DIR_DOWN if dy > 0 else DIR_UP
+                dist = abs(dx) + abs(dy)
+                agent = e.agent_type or 'chaser'
+                aligned = abs(dx) < TILE // 2 or abs(dy) < TILE // 2
+                if agent == 'sniper' and aligned and dist < 260:
+                    e.ai_state = 'RETREAT'
+                    e.dir = DIR_LEFT if abs(dx) > abs(dy) and dx > 0 else (DIR_RIGHT if abs(dx) > abs(dy) else (DIR_UP if dy > 0 else DIR_DOWN))
+                elif agent == 'flanker':
+                    e.ai_state = 'REPOSITION'
+                    e.dir = (DIR_DOWN if abs(dx) > abs(dy) and dy > 0 else DIR_UP if abs(dx) > abs(dy) else horiz)
+                elif agent == 'defender':
+                    e.ai_state = 'GUARD'
+                    e.dir = random.choice((horiz, vert)) if dist > 260 else e.dir
+                elif agent == 'boss':
+                    e.ai_state = 'PRESSURE'
+                    e.dir = horiz if abs(dx) > abs(dy) else vert
                 else:
-                    e.dir = random.randint(0, 3)
+                    e.ai_state = 'CHASE'
+                    e.dir = horiz if abs(dx) > abs(dy) else vert
             moved = e.move(e.dir, self)
             if not moved:
                 e.move_timer = 0
-            elif random.random() < 0.03:
+            elif random.random() < (0.06 if e.agent_type in ('sniper', 'boss') else 0.035):
                 e.shoot(self)
 
     def update_game(self):
@@ -537,9 +562,11 @@ class Game:
         if self.font_small:
             lives = '❤' * max(0, self.lives)
             try:
+                active = next((e for e in self.enemies if e.alive and e.agent_type), None)
+                ai_text = (' AI:' + AGENT_NAMES[active.agent_type] + '/' + active.ai_state) if active else ''
                 surf = self.font_small.render(lives + ' Score:' + str(self.score) +
                                               ' Lv:' + str(self.level) +
-                                              ' Enemies:' + str(self.enemies_left),
+                                              ' Enemies:' + str(self.enemies_left) + ai_text,
                                               True, COLOR_HUD_TEXT)
                 self.screen.blit(surf, (MARGIN, HUD_HEIGHT // 2 - surf.get_height() // 2))
             except Exception:
